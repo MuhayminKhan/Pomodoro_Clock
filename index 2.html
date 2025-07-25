@@ -1,0 +1,248 @@
+<!DOCTYPE html> <!-- Declares the document type as HTML -->
+<html lang="en"> <!-- Starts the HTML document, language is English -->
+<head>
+  <meta charset="UTF-8"> <!-- Sets character encoding to UTF-8 -->
+  <title>Minimal Pomodoro Clock</title> <!-- Title shown in browser tab -->
+  <style>
+    html, body {
+      margin: 0; height: 100%; overflow: hidden;
+      background: #f5f5f5;
+    } /* Remove default margins and disable scroll, light background */
+
+    #clockCanvas {
+      display: block; margin: auto;
+      background: white;
+    } /* Center the canvas and give it a white background */
+
+    #clockCanvas.pulse {
+      animation: pulse 0.5s ease-in-out;
+    } /* Add animation when the canvas pulses briefly */
+
+    @keyframes pulse {
+      0%   { transform: scale(1); }
+      50%  { transform: scale(1.01); }
+      100% { transform: scale(1); }
+    } /* Defines the pulse effect (slight zoom in and out) */
+
+    #controls {
+      position: absolute; bottom: 10px; width: 100%;
+      text-align: center; font-family: sans-serif;
+    } /* Control panel fixed to bottom of screen */
+
+    select {
+      font-size: 1em; margin: 0 0.3em; padding: 0.3em;
+      border-radius: 4px; border: 1px solid #ccc;
+    } /* Styling for dropdowns */
+
+    button {
+      font-size: 1.1em; padding: 0.3em 0.6em; margin-left: 0.5em;
+      border: none; border-radius: 4px;
+      background: #333; color: #fff;
+    } /* Styling for buttons */
+
+    #tally {
+      margin-left: 1em;
+      font-weight: bold;
+    } /* Styling for session progress text */
+  </style>
+</head>
+<body>
+
+<canvas id="clockCanvas"></canvas> <!-- The analog clock display -->
+
+<div id="controls"> <!-- The control panel below the clock -->
+  <select id="aimSelect" title="Sessions to aim for">
+    <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+  </select> <!-- Dropdown to select number of pomodoro sessions -->
+
+  <select id="pomLength" title="Work duration (min)">
+    <option>25</option><option>30</option><option>40</option><option>50</option><option>55</option>
+  </select> <!-- Dropdown to select length of each pomodoro -->
+
+  <select id="breakLength" title="Break duration (min)">
+    <option>5</option><option>10</option><option>20</option>
+  </select> <!-- Dropdown to select break duration -->
+
+  <button id="toggleBtn">▶</button> <!-- Start/Pause/Resume button -->
+  <button id="resetBtn">⟲</button> <!-- Reset button -->
+
+  <span id="tally">0 / 1</span> <!-- Text showing completed/total sessions -->
+</div>
+
+<script>
+  const canvas = document.getElementById('clockCanvas'), // Get the canvas element
+        ctx    = canvas.getContext('2d'); // Get the 2D drawing context
+
+  const bgCanvas = document.createElement('canvas'), // Create a background canvas for clock face
+        bgCtx    = bgCanvas.getContext('2d'); // Context for background
+
+  let radius,                  // Clock radius
+      isRunning = false,      // Whether the timer is running
+      isBreak   = false,      // Whether current session is a break
+      startTime = 0,          // Start time of current session
+      pausedAt  = 0,          // Timestamp when paused
+      duration  = 0,          // Duration of current session in ms
+      sessionsDone = 0,       // Number of completed pomodoros
+      startAngle   = 0,       // Start angle for pie
+      targetAngle  = 0;       // Target angle where pie should end
+
+  const aimSelect   = document.getElementById('aimSelect'),   // Total sessions dropdown
+        pomSelect   = document.getElementById('pomLength'),   // Pomodoro length dropdown
+        breakSelect = document.getElementById('breakLength'), // Break length dropdown
+        toggleBtn   = document.getElementById('toggleBtn'),   // Start/Pause button
+        resetBtn    = document.getElementById('resetBtn'),    // Reset button
+        tallySpan   = document.getElementById('tally');       // Element showing session count
+
+  function resize() {
+    const size = Math.min(window.innerWidth, window.innerHeight); // Get smallest screen dimension
+    canvas.width = canvas.height = bgCanvas.width = bgCanvas.height = size; // Set canvas sizes
+    radius = size / 2 * 0.90; // Set radius with padding
+    drawFace(bgCtx, size);    // Draw clock face on background canvas
+  }
+  window.addEventListener('resize', resize); // Update layout on resize
+  resize(); // Initial sizing
+
+  function drawFace(c, size) {
+    const r = size / 2 * 0.90;
+    c.clearRect(0, 0, size, size); // Clear canvas
+    c.save();
+    c.translate(size / 2, size / 2); // Move origin to center
+    c.beginPath();
+    c.arc(0, 0, r, 0, 2 * Math.PI); // Outer circle
+    c.fillStyle = '#fff'; c.fill(); // Fill white
+    c.lineWidth = r * 0.05; c.strokeStyle = '#333'; c.stroke(); // Border
+    for (let i = 0; i < 12; i++) {
+      c.rotate(i * Math.PI / 6); // Rotate for hour marks
+      c.beginPath();
+      c.moveTo(0, -r);
+      c.lineTo(0, -r * 0.9);
+      c.stroke();
+      c.rotate(-i * Math.PI / 6); // Restore rotation
+    }
+    c.restore();
+  }
+
+  function updateTally() {
+    tallySpan.textContent = `${sessionsDone} / ${aimSelect.value}`; // Update completed/total
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    if (!isRunning) {
+      sessionsDone = 0;
+      updateTally();
+      isBreak = false;
+      startSession(+pomSelect.value); // Start pomodoro
+      isRunning = true;
+      pausedAt = 0;
+      toggleBtn.textContent = '‖'; // Change button to pause
+    } else if (!pausedAt) {
+      pausedAt = Date.now(); // Store when paused
+      toggleBtn.textContent = '▶';
+    } else {
+      startTime += Date.now() - pausedAt; // Adjust start time for pause gap
+      pausedAt = 0;
+      toggleBtn.textContent = '‖';
+    }
+  });
+
+  resetBtn.addEventListener('click', () => {
+    isRunning = false;
+    pausedAt = 0;
+    sessionsDone = 0;
+    toggleBtn.textContent = '▶';
+    updateTally();
+  });
+
+  function startSession(minutes) {
+    duration = minutes * 60_000; // Convert to milliseconds
+    const now = new Date(),
+          m = now.getMinutes(),
+          s = now.getSeconds();
+    startAngle = -Math.PI / 2 + (m * Math.PI / 30 + s * Math.PI / 1800); // Calculate current angle
+    targetAngle = startAngle + minutes * (2 * Math.PI / 60); // Where it should end
+    startTime = Date.now(); // Set start time
+    canvas.classList.add('pulse'); // Animate canvas
+    setTimeout(() => canvas.classList.remove('pulse'), 500);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear main canvas
+    ctx.drawImage(bgCanvas, 0, 0); // Draw static face from background
+
+    if (isRunning) {
+      const elapsed = (pausedAt ? pausedAt : Date.now()) - startTime; // Time passed
+      const frac = Math.min(elapsed / duration, 1); // Fraction completed
+      const current = startAngle + frac * (targetAngle - startAngle); // Current angle
+
+      // Draw full track arc
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, canvas.height / 2, radius * 0.8,
+              startAngle, targetAngle);
+      ctx.lineWidth = radius * 0.2;
+      ctx.strokeStyle = '#cceccc';
+      ctx.stroke();
+
+      // Draw progress arc
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, canvas.height / 2, radius * 0.8,
+              startAngle, current);
+      ctx.lineWidth = radius * 0.2;
+      ctx.strokeStyle = isBreak ? '#76c7c0' : '#ff6347'; // Blue for break, red for pomodoro
+      ctx.stroke();
+
+      if (elapsed >= duration) {
+        canvas.classList.add('pulse'); // Flash when done
+        setTimeout(() => canvas.classList.remove('pulse'), 500);
+
+        if (!isBreak) {
+          sessionsDone++;
+          updateTally();
+          if (sessionsDone < +aimSelect.value) {
+            isBreak = true;
+            startSession(+breakSelect.value); // Start break
+          } else {
+            isRunning = false; // All sessions complete
+            toggleBtn.textContent = '▶';
+          }
+        } else {
+          isBreak = false;
+          startSession(+pomSelect.value); // Start next pomodoro
+        }
+      }
+    }
+
+    const now = new Date(),
+          hr = now.getHours() % 12,
+          mn = now.getMinutes(),
+          sc = now.getSeconds();
+
+    const hourA   = hr * Math.PI / 6 + mn * Math.PI / 360 + sc * Math.PI / 21600,
+          minuteA = mn * Math.PI / 30 + sc * Math.PI / 1800,
+          secondA = sc * Math.PI / 30;
+
+    drawHand(hourA,   radius * 0.5, radius * 0.07); // Draw hour hand
+    drawHand(minuteA, radius * 0.8, radius * 0.05); // Draw minute hand
+    drawHand(secondA, radius * 0.9, radius * 0.02, '#d40000'); // Draw red second hand
+
+    requestAnimationFrame(draw); // Loop draw
+  }
+
+  function drawHand(angle, length, width, color = '#333') {
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -length);
+    ctx.lineWidth = width;
+    ctx.strokeStyle = color;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  draw(); // Start drawing loop
+  updateTally(); // Initialize tally display
+</script>
+</body>
+</html>
